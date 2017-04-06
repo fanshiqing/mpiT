@@ -6,14 +6,14 @@ local pClient = torch.class('pClient')
 
 function pClient:__init(conf,state)
    self.state = state or {}
-   self.rank = conf.rank or -1
+   self.rank = conf.rank or -1 -- client rank
    self.sranks = conf.sranks or {} -- server ranks
-   self.cranks = conf.cranks or {} -- client ranks   
-   self.plong = conf.plong or 0 -- size of whole parameter
-   self.pstorage = conf.pstorage or torch.Storage()
-   self.gstorage = conf.gstorage or torch.Storage()
+   self.cranks = conf.cranks or {} -- client ranks
+   self.plong = conf.plong or 0 -- [size of whole parameter]
+   self.pstorage = conf.pstorage or torch.Storage() -- local param
+   self.gstorage = conf.gstorage or torch.Storage() -- local grad
    self.emptys = torch.Storage()
-   self.sinfo = {}
+   self.sinfo = {} -- meta data info (offset and size) of each sever rank
    self.mtype = mpiT.FLOAT
    self.mworld = conf.world or mpiT.COMM_WORLD
    self.coq = Queue() -- coroutine queue
@@ -24,7 +24,7 @@ end
 
 local function pClient_sendinit(self,srank,offset,size)
    coroutine.yield(mpiT.signal_INIT)   
-   --print('pClient:sendinit',self.rank,srank,offset,size)
+   print('pClient:sendinit',self.rank,srank,offset,size)
    self.sinfo[srank] = {}
    self.sinfo[srank].offset = offset
    self.sinfo[srank].size = size
@@ -33,7 +33,7 @@ local function pClient_sendinit(self,srank,offset,size)
    cinfo[2] = size
    mpiT.aio_send(cinfo,2,mpiT.LONG,
 		 srank,mpiT.tag_ps_recv_init,self.mworld,self.state)
-   --print('pClient:sendinit done')
+   print('pClient:sendinit done')
    coroutine.yield(mpiT.signal_DONE)
 end
 
@@ -45,6 +45,7 @@ local function pClient_sendstop(self,srank)
    coroutine.yield(mpiT.signal_DONE)   
 end
 
+-- Send client gradient to server
 local function pClient_sendgrad(self,grad,srank)
    coroutine.yield(mpiT.signal_INIT)
    local sgrad = torch.Storage(grad,
@@ -57,6 +58,7 @@ local function pClient_sendgrad(self,grad,srank)
    coroutine.yield(mpiT.signal_DONE)
 end
 
+-- Send Clint Parameter to Server
 local function pClient_sendparam(self,param,srank)
    coroutine.yield(mpiT.signal_INIT)
    local sparam = torch.Storage(param,
@@ -81,6 +83,7 @@ local function pClient_recvparam(self,param,srank)
    coroutine.yield(mpiT.signal_DONE)   
 end
 
+-- Async Recv Parameter from Server
 function pClient:async_recv_param()
    local param = self.pstorage
    for i,srank in pairs(self.sranks) do
@@ -90,6 +93,7 @@ function pClient:async_recv_param()
    end
 end
 
+-- Async Send Grad to Server
 function pClient:async_send_grad()
    local grad = self.gstorage
    for i,srank in pairs(self.sranks) do
@@ -99,6 +103,7 @@ function pClient:async_send_grad()
    end
 end
 
+-- Async Send Param to Server
 function pClient:async_send_param()
    local param = self.pstorage
    for i,srank in pairs(self.sranks) do
@@ -111,23 +116,26 @@ end
 local function pClient_init(self)
    -- set offset size for each piece of parameter server
    local offset = 1
+   -- Averaging Global Param to All Servers
    local size = math.floor(self.plong/#self.sranks)
    for i,srank in pairs(self.sranks) do
       if i == #self.sranks then
-	 size = self.plong - offset + 1
+	     size = self.plong - offset + 1
       end
       local co = mpiT.co_execute(pClient_sendinit,{self,srank,offset,size})
       self.coq:push(co)
       offset = offset + size
    end
    mpiT.co_wait(self.coq)
-   -- init pserver param
+   -- init pserver param using the rank==1 client
    if self.rank == self.cranks[1] then
       self:async_send_param(self.pstorage)
    end
    mpiT.co_wait(self.coq)
 end
 
+-- ??? what's the function?
+-- overlap aio and computation
 function pClient:ping(nb)
    local nb = nb or self.coq:len()
    for n=1,nb do
@@ -140,12 +148,13 @@ function pClient:reset(param,grad)
       self.pstorage = param:storage()
       self.plong = self.pstorage:size()
       if grad then
-	 self.gstorage = grad:storage()
-	 assert(self.plong == self.gstorage:size())
+        self.gstorage = grad:storage()
+        assert(self.plong == self.gstorage:size())
       end
    end  
 end
 
+-- sug is sent and suw is recv ???
 function pClient:wait()
    mpiT.co_wait(self.coq)
 end
@@ -163,6 +172,7 @@ function pClient:stop()
    self.state.on = false
 end
 
+-- Start parameter client
 function pClient:start(param,grad)
    self.state.on = true
    self.state.io = true
@@ -170,10 +180,11 @@ function pClient:start(param,grad)
       self.pstorage = param:storage()
       self.plong = self.pstorage:size()
       if grad then
-	 self.gstorage = grad:storage()
-	 assert(self.plong == self.gstorage:size())
+        self.gstorage = grad:storage()
+        assert(self.plong == self.gstorage:size())
       end
    end
-   -- print('i am pc',self.rank,'p',self.pstorage:size(),'g',self.gstorage:size())
+   -- ****** --
+   print('i am pc',self.rank,', param size:',self.pstorage:size(),', grad size:',self.gstorage:size())
    pClient_init(self)
 end

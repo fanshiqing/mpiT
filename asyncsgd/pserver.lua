@@ -10,11 +10,15 @@ require 'mpiT'
 local pServer = torch.class('pServer')
 
 function pServer:__init(conf,state)
+   -- state is a table
    self.state = state or {}
    self.rank = conf.rank or -1
+
+   -- client ranks table
    self.cranks = conf.cranks or {} -- client ranks
-   self.mtype = mpiT.FLOAT
-   self.mworld = conf.world or mpiT.COMM_WORLD
+
+   self.mtype = mpiT.FLOAT -- mpi datatype
+   self.mworld = conf.world or mpiT.COMM_WORLD -- MPI_COMM_WORLD
 
    self.offset = -1 -- offset of param grad
    self.size = -1 -- size of param grad
@@ -30,9 +34,10 @@ function pServer:__init(conf,state)
    self.conf = conf
 end
 
+-- Init ps (mainly init storage)
 local function pServer_recvinit(self,crank)
    coroutine.yield(mpiT.signal_INIT)
-   -- get meta info
+   -- get meta info (offset and size of param & gradient)
    local cinfo = torch.LongStorage(2)
    mpiT.aio_recv(cinfo,2,mpiT.LONG,
 		 crank,mpiT.tag_ps_recv_init,self.mworld,self.state)
@@ -40,22 +45,23 @@ local function pServer_recvinit(self,crank)
    if self.offset == -1 then
       self.offset = cinfo[1]
       self.size = cinfo[2]
-      self.storage.p = torch.Storage(self.size)
-      self.storage.g = {}
+      self.storage.p = torch.Storage(self.size) -- parameter
+      self.storage.g = {}                       -- gradient
       self.storage.g[crank] = torch.Storage(self.size)
       self.tensor.p = torch.Tensor(self.storage.p)
       self.tensor.g = {}
       self.tensor.g[crank] = torch.Tensor(self.storage.g[crank])
-   else
+   else -- init gradient storage for each #pclient
       assert(self.offset == cinfo[1])
       assert(self.size == cinfo[2])
       self.storage.g[crank] = torch.Storage(self.size)
       self.tensor.g[crank] = torch.Tensor(self.storage.g[crank])
    end
-   --print('pServer:recvinit',self.rank,crank,self.offset,self.size)
+   print('pServer:recvinit',self.rank,crank,self.offset,self.size)
    coroutine.yield(mpiT.signal_DONE)
 end
 
+-- ps 'self.rank' send parameter to client rank 'crank'
 local function pServer_sendparam(self,crank)
    coroutine.yield(mpiT.signal_INIT)
    while (self.state.on) do
@@ -64,6 +70,7 @@ local function pServer_sendparam(self,crank)
 		    crank,mpiT.tag_ps_recv_header,self.mworld,self.state)
       --print('ps ' .. self.rank .. ' send param to ' .. crank)
       if self.state.io then
+         -- ps send param to client 'crank'
       	 mpiT.aio_send(self.storage.p,self.size,self.mtype,
 		       crank,mpiT.tag_ps_send_param,self.mworld,self.state)
       end
@@ -72,6 +79,7 @@ local function pServer_sendparam(self,crank)
 end
 
 -- Warning: no lock on self.tensor.p during this recvgrad, expect inconsistent read
+-- ps 'self.rank' receive gradient from client rank 'crank'
 local function pServer_recvgrad(self,crank)
    coroutine.yield(mpiT.signal_INIT)
    while (self.state.on) do      
@@ -79,7 +87,7 @@ local function pServer_recvgrad(self,crank)
       mpiT.aio_recv(self.storage.g[crank],self.size,self.mtype,
 		    crank,mpiT.tag_ps_recv_grad,self.mworld,self.state)
       --print('ps ' .. self.rank .. ' recv grad from ' .. crank)
-      -- apply
+      -- apply ADD GRADIENT TO PARAM!!!!
       self.tensor.p:add(self.tensor.g[crank])
       if self.state.on then
          mpiT.aio_send(self.emptys,0,self.mtype,
@@ -89,6 +97,7 @@ local function pServer_recvgrad(self,crank)
    coroutine.yield(mpiT.signal_DONE)
 end
 
+-- ps 'self.rank' recv parameter form client rank 'crank'
 local function pServer_recvparam(self,crank)
    coroutine.yield(mpiT.signal_INIT)
    mpiT.aio_recv(self.storage.p,self.size,self.mtype,
@@ -97,7 +106,7 @@ local function pServer_recvparam(self,crank)
       mpiT.aio_send(self.emptys,0,self.mtype,
                     crank,mpiT.tag_ps_recv_param_tail,self.mworld,self.state)
    end
-   --print('ps ' .. self.rank .. ' recv param from ' .. crank)
+   print('ps ' .. self.rank .. ' recv param from ' .. crank)
    coroutine.yield(mpiT.signal_DONE)
 end
 
@@ -106,28 +115,30 @@ function table.len(tbl)
    local l=0
    if tbl then
       for k,v in pairs(tbl) do
-	 l=l+1
+         l=l+1
       end
    end
    return l
 end
 
+-- client rank 'crank' stop pserver self.rank
 local function pServer_recvstop(self,crank)
    coroutine.yield(mpiT.signal_INIT)
    local tostop = torch.ByteStorage(1)
    mpiT.aio_recv(tostop,1,mpiT.BYTE,
 		 crank,mpiT.tag_ps_recv_stop,self.mworld,self.state)
    if tostop[1] then
-      self.state.iostop = self.state.iostop + 1
+      self.state.iostop = self.state.iostop + 1 -- iostop usage???
       if self.state.iostop == table.len(self.cranks) then
-	 self.state.on = false
-	 self.state.io = false
-	 -- print('server', self.rank, 'finally stoped by', crank)
+         self.state.on = false
+         self.state.io = false
+         -- print('server', self.rank, 'finally stoped by', crank)
       end
    end
    coroutine.yield(mpiT.signal_DONE)
 end
 
+-- start parameter server
 function pServer:start()
    self.state.on = true
    self.state.io = true
@@ -139,7 +150,7 @@ function pServer:start()
    end
    mpiT.co_wait(self.coq)
    for i,crank in pairs(self.cranks) do      
-      if i == 1 then 
+      if i == 1 then -- pclient rank == 1 responsible for init the param server
          -- init the parameter from the first local worker
          local co3 = mpiT.co_execute(pServer_recvparam,{self,crank})      
          self.coq:push(co3)

@@ -37,24 +37,26 @@ function mpiT.get_size(www)
    return _size[1]
 end
 
+-- MPI Asynchronous send
 function mpiT.aio_send(storage_th,size_long,type_mpi,
 		       dest_int,tag_int,comm_mpi,state,cb)
    local req = mpiT.Request(1)
    local status = mpiT.Status(1)
    local finished = torch.IntStorage(1):fill(0)
-   local state = state or {io=true}
+   local state = state or {io=true }
+
    mpiT.Isend(storage_th,size_long,type_mpi,dest_int,tag_int,comm_mpi,req)
    while finished[1]==0 do
       if state.io then
-	 mpiT.Test(req,finished,status)
+          mpiT.Test(req,finished,status)
       else
-	 mpiT.Cancel(req)
-	 mpiT.Wait(req,status)
-	 local flag = torch.IntStorage(1)
-	 mpiT.Test_cancelled(status,flag)
-	 if flag[1]==1 then
-	    break
-	 end
+         mpiT.Cancel(req)
+         mpiT.Wait(req,status)
+         local flag = torch.IntStorage(1)
+         mpiT.Test_cancelled(status,flag)
+         if flag[1]==1 then
+            break
+         end
       end
       coroutine.yield(mpiT.signal_EXEC)
    end
@@ -64,6 +66,7 @@ function mpiT.aio_send(storage_th,size_long,type_mpi,
    coroutine.yield(mpiT.signal_OK) -- TODO check status
 end
 
+-- MPI Asynchronous Recv
 function mpiT.aio_recv(storage_th,size_long,type_mpi,
 		       src_int,tag_int,comm_mpi,state,cb)
    local req = mpiT.Request(1)
@@ -73,26 +76,29 @@ function mpiT.aio_recv(storage_th,size_long,type_mpi,
    finished[1]=0
    while finished[1]==0 do
       if state.io then
-	 mpiT.Iprobe(src_int,tag_int,comm_mpi,finished,status)
-	 coroutine.yield(mpiT.signal_EXEC)
+          mpiT.Iprobe(src_int,tag_int,comm_mpi,finished,status)
+          coroutine.yield(mpiT.signal_EXEC)
       else
-	 break
+          break
       end
    end
    finished[1]=0
+
+   -- Non-blocking communication
    mpiT.Irecv(storage_th,size_long,type_mpi,src_int,tag_int,comm_mpi,req)
+
    while finished[1]==0 and state.io do
       if state.io then
-	 mpiT.Test(req,finished,status)
-	 coroutine.yield(mpiT.signal_EXEC)
+         mpiT.Test(req,finished,status)
+         coroutine.yield(mpiT.signal_EXEC)
       else
-	 mpiT.Cancel(req)
-	 mpiT.Wait(req,status)
-	 local flag = torch.IntStorage(1)
-	 mpiT.Test_cancelled(status,flag)
-	 if flag[1]==1 then
-	    break
-	 end
+         mpiT.Cancel(req)
+         mpiT.Wait(req,status)
+         local flag = torch.IntStorage(1)
+         mpiT.Test_cancelled(status,flag)
+         if flag[1]==1 then
+            break
+         end
       end
    end
    if cb then
@@ -133,7 +139,7 @@ include('queue.lua')
 function mpiT.co_execute(exec,pack)
    local co = coroutine.create(
       function()
-	 exec(unpack(pack))
+          exec(unpack(pack))
       end
    )
    assert(co ~= nil)
@@ -143,6 +149,7 @@ function mpiT.co_execute(exec,pack)
    return co
 end
 
+---
 -- check if any co done, otherwise resume some co in coq
 function mpiT.co_ping(coq)
    if not coq:empty() then
@@ -178,8 +185,8 @@ end
 function mpiT.co_wait(coq,usec)
    local usec = usec or 0
    while (mpiT.co_ping(coq)) do
-	if usec>0 then
-	  sys.usleep(usec)
-        end
+       if usec>0 then
+         sys.usleep(usec)
+       end
    end
 end
