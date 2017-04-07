@@ -13,6 +13,7 @@ local mb = opt.mb or 128
 local mva = opt.mva or 0
 local su = opt.su or 1
 local maxep = opt.maxepoch or 1000
+local saveep = opt.saveep or 10 -- save model every saveep epoch
 local data_root = opt.data_root or
    io.popen('echo $HOME'):read() .. '/data/torch7/mnist10'
 local gpuid = opt.gpuid or -1
@@ -31,8 +32,8 @@ torch.manualSeed(seed) -- remember to set cutorch.manualSeed if needed
 require 'nn'
 local function buildModel()
    model = nn.Sequential()
-   model:add(nn.Reshape(3,32,32))
---   model:add(nn.Reshape(3,28,28))
+--   model:add(nn.Reshape(3,32,32))
+   model:add(nn.Reshape(3,28,28))
    model:add(nn.SpatialConvolution(3,64,5,5)) -- 64*24*24
    model:add(nn.ReLU())
    model:add(nn.SpatialMaxPooling(2,2,2,2)) -- 64*12*12
@@ -44,10 +45,10 @@ local function buildModel()
    model:add(nn.SpatialConvolution(128,64,3,3)) -- 64*2*2
    model:add(nn.ReLU())
 
-   model:add(nn.Reshape(64*3*3))
-   model:add(nn.Linear(64*3*3,256)) -- fully connected layer
---   model:add(nn.Reshape(64*2*2)) -- reshape tensor with size 64*2*2 into 1D vector with length 64*2*2
---   model:add(nn.Linear(64*2*2,256)) -- fully connected layer
+--   model:add(nn.Reshape(64*3*3))
+--   model:add(nn.Linear(64*3*3,256)) -- fully connected layer
+   model:add(nn.Reshape(64*2*2)) -- reshape tensor with size 64*2*2 into 1D vector with length 64*2*2
+   model:add(nn.Linear(64*2*2,256)) -- fully connected layer
    model:add(nn.ReLU())
    model:add(nn.Dropout(0.5))
 
@@ -95,13 +96,13 @@ trainData = {
    size = function() return trsize end
 }
 for i = 0,4 do
-   subset = torch.load('cifar-10-batches-t7/data_batch_' .. (i+1) .. '.t7', 'ascii')
+   subset = torch.load('../cifar-10-batches-t7/data_batch_' .. (i+1) .. '.t7', 'ascii')
    trainData.data[{ {i*10000+1, (i+1)*10000} }] = subset.data:t():float()
    trainData.labels[{ {i*10000+1, (i+1)*10000} }] = subset.labels
 end
 trainData.labels = trainData.labels + 1
 
-subset = torch.load('cifar-10-batches-t7/test_batch.t7', 'ascii')
+subset = torch.load('../cifar-10-batches-t7/test_batch.t7', 'ascii')
 testData = {
    data = subset.data:t():float(),
    labels = subset.labels[1]:float(),
@@ -133,8 +134,8 @@ trainLogger = optim.Logger(paths.concat(opt.save, 'train.log'))
 testLogger = optim.Logger(paths.concat(opt.save, 'test.log'))
 
 -- reshape to 4-D tensor ---
---trainData.data = trainData.data:reshape(trsize,3,32,32)
---testData.data = testData.data:reshape(tesize,3,32,32)
+trainData.data = trainData.data:reshape(trsize,3,32,32)
+testData.data = testData.data:reshape(tesize,3,32,32)
 --
 --trainData.labels = trainData.labels:float()
 --testData.labels = testData.labels:float()
@@ -177,7 +178,13 @@ if pclient then
    print('pc ' .. rank .. ' started')
 end
 -------------------------------------------------------------------
+require 'image' -- image.crop for training & testing
+
 --- training ---
+local w = 32 -- raw weight and height of cifar-10 image
+local h = 32
+local tw = 28 -- after random/center corp image size in training/testing
+local th = 28
 local function train()
    sys.tic()
    local avg_err = 0
@@ -197,6 +204,10 @@ local function train()
          for j = t,t+mbs-1 do
             -- load new sample
             local input = trainData.data[shuffle[j]]
+            local x1, y1 = torch.random(0, w - tw), torch.random(0, h - th)
+            input = image.crop(input, x1, y1, x1 + tw, y1 + th) -- random batch
+            assert(input:size(2) == tw and input:size(3) == th, 'wrong crop size')
+
             local target = trainData.labels[shuffle[j]]
             table.insert(inputs, input)
             table.insert(targets, target)
@@ -254,12 +265,15 @@ local function train()
          trainLogger:plot()
       end
 
-   --   -- save/log current net
-   --   local filename = paths.concat(opt.save, 'model.net')
-   --   os.execute('mkdir -p ' .. sys.dirname(filename))
-   --   print('==> saving model to '..filename)
-   --   torch.save(filename, model)
-
+      --- save model every
+      if epoch % saveep == 0 then
+         print('saveing model at epoth ' .. epoch)
+         modelname = 'model-epoch-' .. epoch .. '.net'
+         local filename = paths.concat(opt.save, modelname)
+         os.execute('mkdir -p ' .. sys.dirname(filename))
+         print('==> saving model to '..filename)
+         torch.save(filename, model)
+      end
       confusion:zero()
       print(io.popen('hostname -s'):read(),sys.toc(),rank,
         'avg_err at epoch ' .. epoch .. ' is ' .. avg_err / iter)
@@ -283,6 +297,9 @@ local function test()
 
       -- get new sample
       local input = testData.data[t]:float()
+      local w1 = math.ceil((w - tw)/2)
+      local h1 = math.ceil((h - th)/2)
+      input = image.crop(input, w1, h1, w1 + tw, h1 + th) -- center patch
       local target = testData.labels[t]
 
       -- test sample
