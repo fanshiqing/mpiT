@@ -29,36 +29,8 @@ require 'os'
 local seed = opt.seed or os.time()
 torch.manualSeed(seed) -- remember to set cutorch.manualSeed if needed
 -------------------------------------------------------------------
-require 'nn'
-local function buildModel()
-   model = nn.Sequential()
---   model:add(nn.Reshape(3,32,32))
-   model:add(nn.Reshape(3,28,28))
-   model:add(nn.SpatialConvolution(3,64,5,5)) -- 64*24*24
-   model:add(nn.ReLU())
-   model:add(nn.SpatialMaxPooling(2,2,2,2)) -- 64*12*12
-
-   model:add(nn.SpatialConvolution(64,128,5,5)) -- 128*8*8
-   model:add(nn.ReLU())
-   model:add(nn.SpatialMaxPooling(2,2,2,2)) -- 128*4*4
-
-   model:add(nn.SpatialConvolution(128,64,3,3)) -- 64*2*2
-   model:add(nn.ReLU())
-
---   model:add(nn.Reshape(64*3*3))
---   model:add(nn.Linear(64*3*3,256)) -- fully connected layer
-   model:add(nn.Reshape(64*2*2)) -- reshape tensor with size 64*2*2 into 1D vector with length 64*2*2
-   model:add(nn.Linear(64*2*2,256)) -- fully connected layer
-   model:add(nn.ReLU())
-   model:add(nn.Dropout(0.5))
-
-   model:add(nn.Linear(256,10))
-   model:add(nn.LogSoftMax())
-
-   return model;
-end
 --- model ---
-local model = buildModel()
+local model = require('models/7-layers-cnn')
 --- verbose
 if rank == 1 then
    print('<cifar> using model:')
@@ -70,16 +42,9 @@ state.theta,state.grad = model:getParameters() -- param and grad
 
 -------------------------------------------------------------------
 -- remember to reset data_root
+-- CIFAR-10 datset download from:
+--     http://torch7.s3-website-us-east-1.amazonaws.com/data/cifar10.t7.tgz
 --------------------------------------------------
---train_data = torch.load(train_bin) -- training data
---test_data = torch.load(test_bin)   -- test data
---local dim = train_data['data']:size(2)*
---            train_data['data']:size(3)*
---	    train_data['data']:size(4)
---local trsize = train_data['data']:size(1)
---local ttsize = test_data['data']:size(1)
---train_data.data:resize(trsize,dim)
---test_data.data:resize(ttsize,dim)
 trsize = nil
 tesize = nil
 if full then
@@ -124,7 +89,7 @@ testData.data = testData.data:div(255)
 print '===> defining some tools'
 
 -- classes
-classes = {'1','2','3','4','5','6','7','8','9','0'}
+classes = {'airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'}
 
 -- This matrix records the current confusion across classes
 confusion = optim.ConfusionMatrix(classes)

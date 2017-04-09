@@ -60,7 +60,7 @@ opt.mva = 0.9/opt.p -- this is \beta when there are opt.p workers
 opt.lr = 1e-2
 opt.mom = 0.99
 
-opt.maxepoch = 10
+opt.maxepoch = 100
 
 opt.save = 'results' -- results save path
 opt.full = true -- use full dataset
