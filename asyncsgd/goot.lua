@@ -36,8 +36,8 @@ if rank == 1 then
    print('<cifar> using model:')
    print(model)
 end
---- Define loss function
-criterion = nn.CrossEntropyCriterion()
+--- loss function: negtive log-likehood
+criterion = nn.ClassNLLCriterion()
 state.theta,state.grad = model:getParameters() -- param and grad
 
 -------------------------------------------------------------------
@@ -45,8 +45,6 @@ state.theta,state.grad = model:getParameters() -- param and grad
 -- CIFAR-10 datset download from:
 --     http://torch7.s3-website-us-east-1.amazonaws.com/data/cifar10.t7.tgz
 --------------------------------------------------
-trsize = nil
-tesize = nil
 if full then
    trsize = 50000
    tesize = 10000
@@ -148,13 +146,20 @@ require 'image' -- image.crop for training & testing
 --- training ---
 local w = 32 -- raw weight and height of cifar-10 image
 local h = 32
-local tw = 28 -- after random/center corp image size in training/testing
+local tw = 28 -- batch size after random/center in training/testing
 local th = 28
+
+local test -- forward declaration
+
 local function train()
    sys.tic()
+   local timer = torch.Timer() -- the timer starts to count now
    local avg_err = 0
+   local trainErr  --- error of each epoch
    local iter = 0
    for epoch = 1,maxep do
+      model:training()
+      trainErr = 0
       --- shuffle at each epoch ---
       shuffle = torch.randperm(trsize)
       print('===> doing epoch on training data:')
@@ -207,6 +212,7 @@ local function train()
             -- normalize gradients and f(X)
             state.grad:div(#inputs)
             f = f/#inputs
+            trainErr = trainErr + f
 
             avg_err = avg_err + f
             tm.feval = tm.feval + (sys.clock() - time_feval)
@@ -220,13 +226,20 @@ local function train()
          -- increase iteration count
          iter = iter + 1
       end
+      -- train error
+      trainErr = trainErr / math.floor(trsize/mb)
       -- print confusion matrix
       print(confusion)
 
       -- update logger/plot
-      trainLogger:add{['% mean class accuracy (train set)'] = confusion.totalValid * 100}
+      local trainAcc = confusion.totalValid
+      trainLogger:add{['% train accuracy'] = string.format('%0.4f', trainAcc),
+                      ['% wall-clock elapsed time(min)'] = string.format('%0.2f', timer:time().real/60),
+                      ['% train loss'] = string.format('%0.4f', trainErr)}
       if opt.plot then
-         trainLogger:style{['% mean class accuracy (train set)'] = '-'}
+         trainLogger:style{['% % train accuracy'] = '-',
+                           ['% wall-clock elapsed time(min)'] = '-',
+                           ['% train loss'] = '-'}
          trainLogger:plot()
       end
 
@@ -242,23 +255,28 @@ local function train()
       confusion:zero()
       print(io.popen('hostname -s'):read(),sys.toc(),rank,
         'avg_err at epoch ' .. epoch .. ' is ' .. avg_err / iter)
+
+      test()
    end
 end
 -------------------------------------------------------------------
 --- testing ---
 --- report accuracy on the test data
-local function test()
+test = function ()
    -- local vars
+   local testErr = 0
    local time = sys.clock()
+   local timer = torch.Timer() -- the timer starts to count now
 
    -- set model to evaluate mode (for modules that differ in training and testing, like Dropout)
+   -- disable flips, dropouts and batch normalization
    model:evaluate()
 
    -- test over test data
    print('===> testing on test set:')
-   for t = 1,testData:size() do
+   for t = 1, tesize do
       -- disp progress
-      xlua.progress(t, testData:size())
+      xlua.progress(t, tesize)
 
       -- get new sample
       local input = testData.data[t]:float()
@@ -270,20 +288,32 @@ local function test()
       -- test sample
       local pred = model:forward(input)
       confusion:add(pred, target)
+
+      -- compute error
+      err = criterion:forward(pred, target)
+      testErr = testErr + err
    end
 
    -- timing
    time = sys.clock() - time
-   time = time / testData:size()
+   time = time / tesize
    print("\n===> time to test 1 sample = " .. (time*1000) .. 'ms')
+
+   -- testing error estimation
+   testErr = testErr / tesize
 
    -- print confusion matrix
    print(confusion)
 
    -- update log/plot
-   testLogger:add{['% mean class accuracy (test set)'] = confusion.totalValid * 100}
+   local testAcc = confusion.totalValid
+   testLogger:add{['% test accuracy'] = string.format('%0.4f', testAcc),
+      ['% wall-clock elapsed time(min)'] = string.format('%0.2f', timer:time().real/60),
+      ['% test error'] = string.format('%0.2f', testErr)}
    if opt.plot then
-      testLogger:style{['% mean class accuracy (test set)'] = '-'}
+      testLogger:style{['% test accuracy'] = '-',
+                       ['% wall-clock elapsed time(min)'] = '-',
+                       ['% test error'] = '-'}
       testLogger:plot()
    end
 
